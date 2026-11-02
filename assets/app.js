@@ -1,0 +1,146 @@
+if('scrollRestoration' in history)history.scrollRestoration='manual';
+const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ---------- Datos de ejemplo, con la forma del backend ----------
+   Estados del front (estado_ui_nombre): 0 En revisión · 1 Visita pendiente · 2 IVF por validar · 3 IVF cerrado · 4 IVF enviado a Legales
+   Variables de la visita: GET /api/variables (etapa = presencial). */
+const labels=['En revisión','Visita pendiente','IVF por validar','IVF cerrado','IVF enviado a Legales'];
+const seed=[
+['004821','Av. Cabildo 2450, Belgrano',0],
+['004802','Av. Juan B. Justo 4870, Villa Santa Rita',0],
+['004781','Av. Independencia 2560, Balvanera',0],
+['004817','Av. Rivadavia 5120, Caballito',1],
+['004760','Av. Congreso 2850, Coghlan',1],
+['004790','Av. Triunvirato 4250, Villa Urquiza',1],
+['004795','Av. San Martín 2310, Villa Crespo',2],
+['004755','Av. Directorio 2100, Flores',2],
+['004748','Av. Boedo 980, Boedo',2],
+['004768','Av. Caseros 3150, Parque Patricios',3],
+['004739','Av. Almirante Brown 840, La Boca',3],
+['004725','Av. Elcano 3260, Colegiales',3]
+];
+const variables=[
+{key:'empleados',label:'Cantidad de empleados',tipo:'numero'},
+{key:'domicilio',label:'Domicilio',tipo:'texto'},
+{key:'superficie',label:'Superficie (m²)',tipo:'numero'}
+];
+/* Lo declarado sale de la extracción (variable, valor y foja). El domicilio declarado es el de cada expediente. */
+const extraction=x=>[
+{label:'Cantidad de empleados',valor:'42',pagina:14},
+{label:'Domicilio',valor:x.address,pagina:12},
+{label:'Superficie (m²)',valor:'180',pagina:15},
+{label:'Vencimiento del contrato del compromiso geográfico',valor:'15/12/2026',pagina:88}
+];
+/* GET /api/expedientes/{id}/administrativa/checklist */
+const checklist={
+requeridos:[
+{label:'Compromiso geográfico',presentado:true,documentos:'Contrato de alquiler (pp. 85-90)'},
+{label:'Nómina de personal',presentado:true,documentos:'Nómina (pp. 200-201)'},
+{label:'Certificación contable',presentado:false,documentos:''}
+],
+diferencias:[{label:'Cantidad de empleados',declarado:'42',fojaDeclarado:14,nuevo:'38',fojaNuevo:201}]
+};
+const summaryText=x=>`Resumen pre-visita. La empresa declara ${extraction(x)[0].valor} empleados (p. 14), un domicilio en ${x.address} (p. 12) y una superficie de ${extraction(x)[2].valor} m² (p. 15). El contrato del compromiso geográfico vence el 15/12/2026 (p. 88). De los 3 documentos requeridos se presentaron ${checklist.requeridos.filter(d=>d.presentado).length}: falta la certificación contable. La nómina presentada (p. 201) indica 38 empleados y difiere de lo declarado.`;
+
+const initial=()=>seed.map(([id,address,stage])=>({id:'EX-2026-'+id,address,stage,result:'Positiva',date:'2026-10-30',time:'10:00',person:'Responsable del establecimiento',observations:'Se constata el funcionamiento de la actividad declarada. El domicilio observado coincide con el declarado. Se solicita la nómina actualizada.',vals:{empleados:{valor:'41',nota:''},domicilio:{valor:address,nota:''},superficie:{valor:'180',nota:''}},file:stage>=2?'acta-visita.jpg':'',report:''}));
+let records=initial();let current=0,page='list',evidenceTab='property',listTab='all',listQuery='',editingAlert=null;
+const r=()=>records[current];
+const badge=(t,c='')=>`<span class="badge ${c}">${t}</span>`;
+const button=(t,a,c='')=>`<button type="button" data-act="${a}" class="${c}">${t}</button>`;
+function notify(t){$('#toast').textContent=t;$('#toast').style.display='block';setTimeout(()=>$('#toast').style.display='none',3500)}
+const fmtDate=d=>String(d).split('-').reverse().join('/');
+
+/* ---------- Descargas en PDF (el backend entrega original.pdf e ivf.pdf) ---------- */
+function pdfBlob(title,body){
+const clean=t=>String(t).replace(/[–—]/g,'-').replace(/[“”]/g,'"').replace(/[‘’]/g,"'").replace(/[✓→]/g,'').replace(/[^\n\x20-\xFF]/g,'?');
+const wrap=[];
+for(const raw of (title+'\n\n'+body).split('\n')){let line=clean(raw);if(!line){wrap.push('');continue}while(line.length>92){let cut=line.lastIndexOf(' ',92);if(cut<=0)cut=92;wrap.push(line.slice(0,cut));line=line.slice(cut).trimStart()}wrap.push(line)}
+const perPage=56,pages=[];
+for(let i=0;i<wrap.length;i+=perPage)pages.push(wrap.slice(i,i+perPage));
+const pdfEsc=s=>s.replace(/[\\()]/g,m=>'\\'+m);
+const objs=[];
+objs[1]='<< /Type /Catalog /Pages 2 0 R >>';
+objs[2]=`<< /Type /Pages /Kids [${pages.map((_,i)=>`${4+2*i} 0 R`).join(' ')}] /Count ${pages.length} >>`;
+objs[3]='<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
+pages.forEach((lines,i)=>{
+const stream='BT /F1 10 Tf 12 TL 56 786 Td\n'+lines.map(l=>`(${pdfEsc(l)}) Tj T*`).join('\n')+'\nET';
+objs[4+2*i]=`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5+2*i} 0 R >>`;
+objs[5+2*i]=`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+});
+let out='%PDF-1.4\n';const offsets=[];
+for(let i=1;i<objs.length;i++){offsets[i]=out.length;out+=`${i} 0 obj\n${objs[i]}\nendobj\n`}
+const xref=out.length;
+out+=`xref\n0 ${objs.length}\n0000000000 65535 f \n`+offsets.slice(1).map(o=>String(o).padStart(10,'0')+' 00000 n \n').join('')+`trailer\n<< /Size ${objs.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+return new Blob([Uint8Array.from(out,c=>c.charCodeAt(0))],{type:'application/pdf'});
+}
+function download(blob,name){const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+
+/* ---------- Lista ---------- */
+function list(){return `<p class="crumb">GCBA / PAF / Fiscalización</p><h1>Mis expedientes</h1><p class="muted">Revisá, registrá la visita y validá el IVF desde un mismo lugar.</p><div class="list-tabs unified-filters" role="tablist" aria-label="Estado de expedientes">${[['all','Todos',records.length],['0','En revisión',records.filter(x=>x.stage===0).length],['1','Visitas pendientes',records.filter(x=>x.stage===1).length],['2','IVF por validar',records.filter(x=>x.stage===2).length],['3','IVF cerrados',records.filter(x=>x.stage===3).length],['4','IVF enviados a Legales',records.filter(x=>x.stage===4).length]].map(([key,title,count])=>`<button type="button" role="tab" aria-selected="${listTab===key}" data-act="listTab:${key}">${title} <span>${count}</span></button>`).join('')}</div><label for="search">Buscar expediente</label><input id="search" placeholder="Número de expediente" value="${esc(listQuery)}"><div class="table"><table><thead><tr><th>EXPEDIENTE</th><th>ESTADO</th><th></th></tr></thead><tbody id="rows">${rows(listQuery)}</tbody></table></div>`}
+function rows(q){return records.map((x,i)=>({...x,i})).filter(x=>listTab==='all'||x.stage===Number(listTab)).filter(x=>x.id.toLowerCase().includes(q.toLowerCase())).map(x=>`<tr><td><strong>${x.id}</strong></td><td>${badge(labels[x.stage],(x.stage===1||x.stage===2)?'amber':x.stage===0?'neutral':'')}</td><td>${button('Ver expediente','open:'+x.i)}</td></tr>`).join('')||'<tr><td colspan="3">No se encontraron expedientes.</td></tr>'}
+function step(n,title,subtitle,status,body,open=false){return `<details class="step" ${open?'open':''}><summary><span class="num">${r().stage>=n?'✓':n}</span><div><strong>${title}</strong><p>${subtitle}</p></div>${badge(status,status==='En curso'?'amber':status.includes('Pendiente')?'neutral':'')}</summary><div class="step-body">${body}</div></details>`}
+
+/* ---------- Paso 1 · Revisión ---------- */
+const extractedTable=x=>`<h3>Datos extraídos del expediente</h3><p class="hint">Lo declarado por la empresa, con la foja de origen.</p><div class="table"><table><thead><tr><th>DATO</th><th>VALOR DECLARADO</th><th>FOJA</th></tr></thead><tbody>${extraction(x).map(d=>`<tr><td><strong>${esc(d.label)}</strong></td><td>${esc(d.valor)}</td><td>p. ${d.pagina}</td></tr>`).join('')}</tbody></table></div>`;
+const docsTable=()=>`<h3>Documentación requerida</h3><p class="hint">Qué presentó la empresa y qué falta, según el checklist de la etapa administrativa.</p><div class="table document-status"><div class="document-scroll" tabindex="0" role="region" aria-label="Documentación requerida"><table><thead><tr><th>DOCUMENTO</th><th>ESTADO</th><th>PRESENTADO EN</th></tr></thead><tbody>${checklist.requeridos.map(d=>`<tr><td><strong>${esc(d.label)}</strong></td><td>${badge(d.presentado?'Presentado':'Faltante',d.presentado?'':'amber')}</td><td>${esc(d.documentos||'Sin documento')}</td></tr>`).join('')}</tbody></table></div><div class="document-footer">${checklist.requeridos.length} registros</div></div>`;
+const diffsTable=()=>checklist.diferencias.length?`<h3>Diferencias con lo declarado</h3><div class="table"><table><thead><tr><th>VARIABLE</th><th>DECLARADO</th><th>PRESENTADO</th></tr></thead><tbody>${checklist.diferencias.map(d=>`<tr><td><strong>${esc(d.label)}</strong></td><td>${esc(d.declarado)} (p. ${d.fojaDeclarado})</td><td>${esc(d.nuevo)} (p. ${d.fojaNuevo})</td></tr>`).join('')}</tbody></table></div>`:'';
+function caseAlerts(){const x=r();if(!x.alerts)x.alerts=[
+{origin:'IA · Documentación',text:'Solicitar la certificación contable del último ejercicio: no se encontró en la documentación presentada.',confirmed:x.stage>0},
+{origin:'IA · Nómina',text:'Verificar la cantidad de empleados: la nómina presentada (p. 201) indica 38 y lo declarado es 42 (p. 14).',confirmed:x.stage>0},
+{origin:'IA · Contrato',text:'Revisar el vencimiento del contrato del compromiso geográfico: vence el 15/12/2026 (p. 88).',confirmed:x.stage>0}];return x.alerts}
+function alertSection(){const alerts=caseAlerts(),editable=r().stage===0;return `<section class="previsit"><div class="row"><h3>Alertas pre-visita</h3>${editable?button('Agregar alerta','addAlert'):''}</div>${editable&&editingAlert!==null?`<div class="alert-editor"><label for="alertText">${editingAlert==='new'?'Nueva alerta para la visita':'Editar alerta para la visita'}</label><textarea id="alertText" placeholder="Indicá qué se debe verificar durante la visita">${editingAlert==='new'?'':esc(alerts[editingAlert].text)}</textarea><div class="toolbar">${button('Guardar alerta','saveAlert','primary')}${button('Cancelar','cancelAlert','back')}</div></div>`:''}<div class="table alert-table"><table><thead><tr><th>ORIGEN</th><th>ALERTA PARA LA VISITA</th><th>ESTADO</th>${editable?'<th>ACCIONES</th>':''}</tr></thead><tbody>${alerts.map((a,i)=>`<tr><td class="alert-origin">${esc(a.origin)}</td><td>${esc(a.text)}</td><td>${badge(a.confirmed?'Confirmada':'Por confirmar',a.confirmed?'':'amber')}</td>${editable?`<td><div class="alert-buttons">${a.origin.startsWith('IA ·')?(a.confirmed?'':button('Confirmar','confirmAlert:'+i,'link')):button('Editar','editAlert:'+i,'link')}${button('Quitar','removeAlert:'+i,'link danger')}</div></td>`:''}</tr>`).join('')||`<tr><td colspan="${editable?4:3}">No hay alertas para esta visita.</td></tr>`}</tbody></table><div class="document-footer">Mostrando ${alerts.length} de ${alerts.length} registros</div></div><p class="hint">${editable?'Revisá y confirmá las alertas para preparar la visita.':'Las alertas confirmadas quedan disponibles como referencia para la visita.'}</p></section>`}
+const dlIcon='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5"/></svg>';
+function review(){const x=r();return `<div class="review-download"><h3>Resumen del expediente</h3><button data-act="downloadCase" class="download-case">${dlIcon}Descargar expediente completo</button></div><p>${esc(summaryText(x))}</p>${extractedTable(x)}${docsTable()}${diffsTable()}${alertSection()}${x.stage===0?`<div class="actionbar"><p>Al habilitar la visita se cierra la etapa administrativa.</p>${button('Habilitar visita','enable','primary')}</div>`:`<div class="success" style="margin-top:20px">✓ Visita habilitada por Martín Pérez. Se cerró la etapa administrativa. Podés consultar las alertas y la documentación en cualquier momento.</div>`}`}
+
+/* ---------- Paso 2 · Visita ---------- */
+function evidenceFiles(){const x=r();x.propertyPhotos??=[];x.recordPhotos??=x.file?[{name:x.file,url:''}]:[];return evidenceTab==='property'?x.propertyPhotos:x.recordPhotos}
+function evidenceSection(readonly=false){const x=r();const files=evidenceFiles();const recordName=x.result==='Positiva'?'acta':'cédula';return `<section class="evidence-section"><h3>Evidencia de la visita</h3><div class="evidence-tabs" role="tablist" aria-label="Tipo de evidencia"><button type="button" role="tab" id="tab-property" aria-controls="evidence-panel" aria-selected="${evidenceTab==='property'}" data-act="evidence:property">Fotografías del inmueble <span>${(x.propertyPhotos||[]).length}</span></button><button type="button" role="tab" id="tab-record" aria-controls="evidence-panel" aria-selected="${evidenceTab==='record'}" data-act="evidence:record">Acta o cédula <span>${(x.recordPhotos||[]).length}</span></button></div><div id="evidence-panel" role="tabpanel" aria-labelledby="tab-${evidenceTab}"><p>${evidenceTab==='property'?'Seleccioná fotografías del inmueble.':'Adjuntá el '+recordName+' de la visita.'}</p>${readonly?'':`<div class="evidence-drop" id="evidence-drop"><span class="upload-icon" aria-hidden="true">↑</span><h3>Arrastrá tus archivos acá</h3><p>O seleccioná uno o más archivos desde tu dispositivo.</p><input class="filepicker" id="evidence-input" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple><label class="primary upload-button" for="evidence-input" tabindex="0" role="button">Cargar archivos</label><p class="hint">JPG, PNG, WEBP o PDF. Hasta 15 MB por archivo.</p><button type="button" class="link" data-act="sampleEvidence">Usar archivos de ejemplo</button></div>`}${files.length?`<div class="table evidence-table"><table><thead><tr><th>ARCHIVO</th>${readonly?'':'<th>ACCIÓN</th>'}</tr></thead><tbody>${files.map((f,i)=>`<tr><td><span>${esc(f.name)}</span>${f.url?`<img src="${esc(f.url)}" alt="${esc(f.name)}" class="evidence-thumb">`:''}</td>${readonly?'':`<td><button type="button" class="link danger" data-act="removeEvidence:${i}">Quitar</button></td>`}</tr>`).join('')}</tbody></table></div>`:'<p class="hint evidence-empty">Todavía no hay archivos en esta sección.</p>'}</div></section>`}
+const readFile=f=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(f)});
+async function addEvidence(files){sync();const target=evidenceFiles();let invalid=false;const allowed=['image/jpeg','image/png','image/webp','application/pdf'];for(const f of files){if(!allowed.includes(f.type)){invalid=true;continue}if(f.size>15*1024*1024){notify('Cada archivo puede pesar hasta 15 MB');continue}const url=f.type.startsWith('image/')?await readFile(f):'';target.push({name:f.name,url})}r().file=(r().recordPhotos||[]).map(f=>f.name).join(', ');render();if(invalid)notify('Solo se admiten archivos JPG, PNG, WEBP o PDF')}
+const valuesFields=x=>variables.map(v=>`<div><label for="val-${v.key}">${esc(v.label)}</label><input id="val-${v.key}" ${v.tipo==='numero'?'type="number" min="0" step="any"':''} required value="${esc(x.vals[v.key].valor)}"><p class="hint">Declarado: ${esc(extraction(x).find(d=>d.label===v.label)?.valor||'-')} (p. ${extraction(x).find(d=>d.label===v.label)?.pagina||'-'})</p></div><div><label for="nota-${v.key}">Nota sobre ${esc(v.label.toLowerCase())}</label><input id="nota-${v.key}" value="${esc(x.vals[v.key].nota)}"></div>`).join('');
+function visit(){const x=r();if(!x.stage)return '<p class="muted">El registro estará disponible cuando habilites la visita. La documentación y las alertas quedarán accesibles arriba.</p>';
+if(x.stage>=2)return `<div class="success">✓ Visita registrada · Resultado ${esc(x.result.toLowerCase())}</div><div class="meta"><div>Fecha<strong>${esc(fmtDate(x.date))} · ${esc(x.time)}</strong></div><div>Persona que atiende<strong>${esc(x.person)}</strong></div><div>Evidencia<strong>${x.result==='Positiva'?'Acta':'Cédula'} · ${esc(x.file)}</strong></div></div><h3>Valores constatados</h3><div class="table"><table><thead><tr><th>VARIABLE</th><th>DECLARADO</th><th>CONSTATADO</th><th>NOTA</th></tr></thead><tbody>${variables.map(v=>{const d=extraction(x).find(e=>e.label===v.label);return `<tr><td><strong>${esc(v.label)}</strong></td><td>${esc(d.valor)} (p. ${d.pagina})</td><td>${esc(x.vals[v.key].valor)}</td><td>${esc(x.vals[v.key].nota||'-')}</td></tr>`}).join('')}</tbody></table></div><h3>Información relevada</h3><p style="white-space:pre-wrap">${esc(x.observations)}</p>${evidenceSection(true)}<p class="hint">Registro conservado para consulta y como respaldo del IVF.</p>`;
+return `<form id="visitform"><h3>Registro de la visita</h3><div class="forms"><div><label for="date">Fecha de visita</label><input id="date" type="date" required value="${esc(x.date)}"></div><div><label for="time">Hora</label><input id="time" type="time" required value="${esc(x.time)}"></div><div class="full"><label for="person">Persona que atiende y función</label><input id="person" required value="${esc(x.person)}"></div><div class="full"><label for="result">Resultado de la visita</label><select id="result"><option ${x.result==='Positiva'?'selected':''}>Positiva</option><option ${x.result==='Negativa'?'selected':''}>Negativa</option></select><p id="resultHint" class="hint">${x.result==='Positiva'?'Adjuntá el acta de la visita.':'Adjuntá la cédula de la visita.'}</p></div><div class="full"><h3>Valores constatados</h3><p class="hint">Se comparan con lo declarado en el expediente.</p></div>${valuesFields(x)}<div class="full"><label for="observations">Información relevada y observaciones</label><textarea id="observations" required>${esc(x.observations)}</textarea></div><div class="full">${evidenceSection()}</div></div><div class="actionbar">${button('Guardar borrador','draft')}<button class="primary" type="submit">Guardar visita y generar borrador de IVF</button></div><p class="hint">Demo: el borrador se compone con los datos ingresados; no utiliza un servicio de IA real.</p></form>`}
+
+/* ---------- Paso 3 · IVF ---------- */
+function reportText(){const x=r();const ext=extraction(x);return `INFORME DE VISITA DE FISCALIZACIÓN\nExpediente ${x.id}\n\nFecha: ${fmtDate(x.date)} · ${x.time}\nFiscalizador: Martín Pérez\nResultado: ${x.result}\nPersona que atiende: ${x.person}\n\nANTECEDENTES DEL EXPEDIENTE\n${ext.map(d=>`${d.label}: ${d.valor} (p. ${d.pagina})`).join('\n')}\n\nDOCUMENTACIÓN PRESENTADA\n${checklist.requeridos.map(d=>`${d.label}: ${d.presentado?'presentado - '+d.documentos:'faltante'}`).join('\n')}\n\nVALORES CONSTATADOS\n${variables.map(v=>`${v.label}: ${x.vals[v.key].valor}${x.vals[v.key].nota?' ('+x.vals[v.key].nota+')':''}`).join('\n')}\n\nINFORMACIÓN RELEVADA\n${x.observations}\n\nEVIDENCIA\n${x.result==='Positiva'?'Acta':'Cédula'}: ${x.file}\n\nFOTOGRAFÍAS DEL INMUEBLE\n${(x.propertyPhotos||[]).map(f=>f.name).join('\n')||'Sin fotografías del inmueble adjuntas.'}\n\nREVISIÓN DEL FISCALIZADOR\nVerificar correspondencia de los datos y alcance de las observaciones antes de validar.`}
+function report(){const x=r();if(x.stage<2)return '<p class="muted">El borrador de IVF se generará al completar el registro de la visita. La validación estará a cargo del fiscalizador.</p>';
+const closed=x.stage>=3;
+return `${closed?`<div class="success">✓ ${x.stage===3?'IVF cerrado':'IVF enviado a Legales'} por Martín Pérez. El registro de las etapas anteriores permanece disponible.</div>`:'<div class="notice"><strong>Borrador listo para revisar</strong><p>Revisá el texto y contrastalo con el registro de la visita y su evidencia. Podés abrir ambos bloques a la vez.</p></div>'}<label for="report">${closed?'Informe validado':'Borrador de IVF · editable'}</label><textarea class="report" id="report" ${closed?'readonly':''}>${esc(x.report||reportText())}</textarea>${x.stage===2?`<label class="reviewcheck"><input id="checked" type="checkbox"> Revisé los datos del informe y la evidencia de la visita.</label><div class="actionbar">${button('Validar IVF','validate','primary')}</div>`:x.stage===3?`<div class="actionbar"><p>El informe conserva la versión validada.</p>${button('Descargar IVF (PDF)','download','primary')}</div>`:`<div class="actionbar"><p>El expediente fue remitido a Legales con el informe validado.</p></div>`}`}
+function detail(){const x=r();return `<div class="demo-bar"><span>DEMO · Datos ilustrativos · Los datos se reinician al recargar la página</span><select id="scenario" aria-label="Cambiar caso de ejemplo">${records.map((v,i)=>`<option value="${i}" ${i===current?'selected':''}>${v.id} · ${labels[v.stage]}</option>`).join('')}</select>${button('Reiniciar demo','reset','link')}</div>${button('← Mis expedientes','list','back')}<p class="crumb" style="margin-top:24px">GCBA / PAF / Fiscalización / ${x.id}</p><div class="row"><div><div class="eyebrow">EXPEDIENTE</div><h1>${x.id}</h1></div>${badge(labels[x.stage],(x.stage===1||x.stage===2)?'amber':'')}</div><div class="layout"><div>${step(1,'Revisión del expediente','Documentación, resumen y decisión de visita',x.stage?'Completada':'En curso',review(),x.stage===0)}${step(2,'Visita','Registro, resultado y acta o cédula',x.stage>=2?'Completada':x.stage===1?'En curso':'Pendiente',visit(),x.stage===1)}${step(3,'Informe IVF','Borrador, revisión y validación',x.stage>=3?labels[x.stage]:x.stage===2?'Pendiente de validación':'Pendiente',report(),x.stage>=2)}</div><div class="rail"><div class="panel"><h3>Tu próximo paso</h3><p>${['Revisá las alertas y habilitá la visita.','Registrá la visita y adjuntá el acta o la cédula.','Revisá el borrador y validá el IVF.','El IVF está cerrado. Podés consultar el informe final.','El IVF fue enviado a Legales. Podés consultar el informe remitido.'][x.stage]}</p><p class="hint">Los pasos anteriores quedan siempre disponibles.</p></div></div></div>`}
+function openIVFDialog(){
+let dialog=$('#ivf-dialog');
+if(!dialog){dialog=document.createElement('dialog');dialog.id='ivf-dialog';dialog.className='ivf-dialog';dialog.setAttribute('aria-labelledby','ivf-dialog-title');dialog.setAttribute('aria-describedby','ivf-dialog-description');dialog.innerHTML=`<h2 id="ivf-dialog-title">Validar IVF</h2><p id="ivf-dialog-description">Elegí cómo querés completar el flujo del informe.</p><div class="ivf-options"><button type="button" data-act="finishIVF" class="ivf-option"><strong>Finalizar IVF</strong><span>El informe quedará en estado IVF cerrado.</span></button><button type="button" data-act="sendLegal" class="ivf-option"><strong>Enviar a Legales</strong><span>El informe quedará en estado IVF enviado a Legales.</span></button></div><div class="ivf-dialog-footer"><button type="button" data-act="cancelIVF" autofocus>Cancelar</button></div>`;document.body.appendChild(dialog)}
+dialog.showModal();
+}
+
+/* ---------- Estado de pantalla ---------- */
+function sync(){if($('#date')){for(const k of ['date','time','person','result','observations'])r()[k]=$('#'+k).value;for(const v of variables){const a=$('#val-'+v.key),b=$('#nota-'+v.key);if(a)r().vals[v.key].valor=a.value;if(b)r().vals[v.key].nota=b.value}}if($('#report'))r().report=$('#report').value}
+function caseText(){const x=r();return `${x.id}\nEstado: ${labels[x.stage]}\nExpediente de demostración. Contiene la información disponible en esta demo; no incluye los documentos originales.\n\n1. REVISION DEL EXPEDIENTE\n${summaryText(x)}\n\nDatos extraídos\n${extraction(x).map(d=>`${d.label}: ${d.valor} (p. ${d.pagina})`).join('\n')}\n\nDocumentación requerida\n${checklist.requeridos.map(d=>`${d.label}: ${d.presentado?'presentado - '+d.documentos:'faltante'}`).join('\n')}\n\nAlertas pre-visita\n${caseAlerts().map(a=>`- ${a.text} [${a.confirmed?'confirmada':'por confirmar'}]`).join('\n')}\n\n2. VISITA\n${x.stage>=2?`Fecha: ${fmtDate(x.date)} · ${x.time}\nResultado: ${x.result}\nPersona que atiende: ${x.person}\n${variables.map(v=>`${v.label}: ${x.vals[v.key].valor}`).join('\n')}\n\n${x.observations}\n\nEvidencia registrada: ${x.file}`:'Visita pendiente de registro.'}\n\n3. INFORME IVF\n${x.stage>=2?(x.report||reportText()):'Aún no generado.'}`}
+function render(){ $('#app').innerHTML=page==='list'?list():detail();$('#search')?.addEventListener('input',e=>{listQuery=e.target.value;$('#rows').innerHTML=rows(listQuery)});$('#scenario')?.addEventListener('change',e=>{sync();current=+e.target.value;render()});$('#result')?.addEventListener('change',e=>{sync();r().file='';r().recordPhotos=[];render()});$('#evidence-input')?.addEventListener('change',e=>addEvidence([...e.target.files]));const drop=$('#evidence-drop');if(drop){drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('dragging')});drop.addEventListener('dragleave',()=>drop.classList.remove('dragging'));drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('dragging');addEvidence([...e.dataTransfer.files])});drop.querySelector('[role="button"]').addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('#evidence-input').click()}})}
+$('#visitform')?.addEventListener('submit',e=>{e.preventDefault();sync();if(!r().file){notify('Adjuntá el acta o la cédula para continuar');return}if(!r().person.trim()||!r().observations.trim()){notify('Completá la persona y las observaciones');return}if(variables.some(v=>!String(r().vals[v.key].valor).trim())){notify('Completá los valores constatados');return}r().stage=2;r().report=reportText();render();notify('Visita registrada. El borrador está listo para revisar.')})}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(!b)return;const a=b.dataset.act;sync();
+if(a==='addAlert'){editingAlert='new'}
+else if(a==='cancelAlert'){editingAlert=null}
+else if(a.startsWith('editAlert:')){const i=+a.split(':')[1];if(r().stage!==0||caseAlerts()[i]?.origin.startsWith('IA ·'))return;editingAlert=i}
+else if(a.startsWith('removeAlert:')){const i=+a.split(':')[1];if(r().stage!==0||!caseAlerts()[i])return;caseAlerts().splice(i,1);editingAlert=null}
+else if(a==='saveAlert'){const text=$('#alertText').value.trim();if(!text){notify('Escribí el contenido de la alerta');return}if(editingAlert==='new')caseAlerts().push({origin:'Fiscalizador',text,confirmed:true});else{caseAlerts()[editingAlert].text=text;caseAlerts()[editingAlert].confirmed=true}editingAlert=null}
+else if(a.startsWith('confirmAlert:')){caseAlerts()[+a.split(':')[1]].confirmed=true}
+else if(a.startsWith('listTab:')){listTab=a.split(':')[1];listQuery='';page='list'}
+else if(a.startsWith('evidence:')){evidenceTab=a.split(':')[1]}
+else if(a==='sampleEvidence'){const files=evidenceFiles();const sample=evidenceTab==='property'?[{name:'fachada.jpg',url:''},{name:'salon-actividades.jpg',url:''}]:[{name:r().result==='Positiva'?'acta-visita.jpg':'cedula-visita.jpg',url:''}];sample.forEach(f=>{if(!files.some(v=>v.name===f.name))files.push(f)});r().file=(r().recordPhotos||[]).map(f=>f.name).join(', ');notify('Archivos de ejemplo incorporados')}
+else if(a.startsWith('removeEvidence:')){evidenceFiles().splice(+a.split(':')[1],1);r().file=(r().recordPhotos||[]).map(f=>f.name).join(', ')}
+else if(a==='list'){page='list'}
+else if(a.startsWith('open:')){current=+a.split(':')[1];page='detail';editingAlert=null}
+else if(a==='enable'){if(caseAlerts().some(a=>!a.confirmed)){notify('Confirmá las alertas pre-visita antes de habilitar la visita');return}r().stage=1;notify('Visita habilitada. Se cerró la etapa administrativa.')}
+else if(a==='draft'){notify('Borrador guardado')}
+else if(a==='validate'){if(!$('#checked').checked){notify('Confirmá que revisaste el informe y la evidencia');return}if(!r().report.trim()){notify('El informe no puede estar vacío');return}openIVFDialog();return}
+else if(a==='cancelIVF'){$('#ivf-dialog')?.close();return}
+else if(a==='finishIVF'||a==='sendLegal'){if(r().stage!==2||!$('#ivf-dialog')?.open)return;r().stage=a==='finishIVF'?3:4;$('#ivf-dialog').close();notify(a==='finishIVF'?'IVF cerrado correctamente':'IVF enviado a Legales correctamente')}
+else if(a==='downloadCase'){download(pdfBlob('EXPEDIENTE COMPLETO',caseText()),r().id+'-expediente-completo-demo.pdf');notify('Expediente de demostración descargado');return}
+else if(a==='download'){download(pdfBlob('INFORME DE VISITA DE FISCALIZACIÓN (IVF)',r().report||reportText()),r().id+'-IVF.pdf');return}
+else if(a==='reset'){records=initial();current=0;page='list';listTab='all';listQuery='';evidenceTab='property';editingAlert=null;notify('Demo reiniciada')}
+render();if(a.startsWith('evidence:'))document.querySelectorAll('.step')[1].open=true});
+$('#home').onclick=()=>{sync();page='list';render()};render();
+
+window.scrollTo(0,0);
