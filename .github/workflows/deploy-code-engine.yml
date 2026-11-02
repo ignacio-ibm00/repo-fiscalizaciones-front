@@ -1,0 +1,31 @@
+name: Deploy to IBM Code Engine
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IBM_CLOUD_REGION: au-syd
+  CE_PROJECT: gestorde-demo
+  CE_APP: gestorde-demo
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install IBM Cloud CLI and Code Engine plugin
+        run: |
+          curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+          ibmcloud plugin install code-engine -f
+
+      - name: Login to IBM Cloud
+        env:
+          IBM_CLOUD_API_KEY: ${{ secrets.IBM_CLOUD_API_KEY }}
+        run: |
+          ibmcloud login --apikey "$IBM_CLOUD_API_KEY" -r "$IBM_CLOUD_REGION" -q
+
+      - name: Rebuild and deploy application from source
+        run: |
+          ibmcloud ce project select --name "$CE_PROJECT"
+          ibmcloud ce application update --name "$CE_APP" --rebuild --wait
